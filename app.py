@@ -105,14 +105,14 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-
 @st.cache_resource
 def build_chain():
-    df = pd.read_csv("ds_salaries.csv")
     experience_map = {"EN": "Entry level", "MI": "Mid level", "SE": "Senior", "EX": "Executive"}
     employment_map = {"FT": "Full time", "PT": "Part time", "CT": "Contract", "FL": "Freelance"}
-    documents = []
-    for _, row in df.iterrows():
+
+    salary_df = pd.read_csv("ds_salaries.csv")
+    salary_docs = []
+    for _, row in salary_df.iterrows():
         content = f"""
 Job Title: {row['job_title']}
 Experience Level: {experience_map.get(row['experience_level'], row['experience_level'])}
@@ -123,16 +123,31 @@ Company Location: {row['company_location']}
 Company Size: {'Small' if row['company_size']=='S' else 'Medium' if row['company_size']=='M' else 'Large'}
 Year: {row['work_year']}
 """
-        documents.append(Document(page_content=content))
+        salary_docs.append(Document(page_content=content, metadata={"source": "salary"}))
 
+    onet_df = pd.read_csv("onet_occupations.csv")
+    onet_docs = []
+    for _, row in onet_df.iterrows():
+        content = f"""
+Occupation: {row['title']}
+Description: {row['description']}
+Key Skills: {row['skills']}
+Knowledge Areas: {row['knowledge']}
+Typical Tasks: {row['tasks']}
+Bright Outlook: {'Yes - strong job growth expected' if row['bright_outlook'] else 'Average growth'}
+"""
+        onet_docs.append(Document(page_content=content, metadata={"source": "onet"}))
+
+    all_docs = salary_docs + onet_docs
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    chunks = splitter.split_documents(documents)
+    chunks = splitter.split_documents(all_docs)
     vectorstore = FAISS.from_documents(chunks, OpenAIEmbeddings())
     retriever = vectorstore.as_retriever(search_kwargs={"k": 20})
 
     prompt = ChatPromptTemplate.from_template("""
-You are a job market analyst. Answer with specific numbers, job titles, and insights.
-Always mention salary ranges and experience levels when relevant.
+You are an expert career and job market analyst with access to real salary data
+and detailed O*NET occupation data. Answer with specific numbers, skills, tasks,
+and insights. Mention salary ranges, required skills, and job outlook when relevant.
 
 Data:
 {context}
@@ -147,32 +162,30 @@ Question: {question}
         | llm
         | StrOutputParser()
     )
-    return chain, len(df)
-
+    return chain, len(salary_df), len(onet_df)
 st.markdown('<p class="hero-title">AI Job Market Analyst</p>', unsafe_allow_html=True)
 st.markdown('<p class="hero-sub">Ask anything about data science salaries, roles, and career trends</p>', unsafe_allow_html=True)
 
-with st.spinner("Loading job market data..."):
-    chain, total_records = build_chain()
+with st.spinner("Loading career intelligence data..."):
+    chain, salary_count, onet_count = build_chain()
 
 col1, col2, col3 = st.columns(3)
 with col1:
-    st.markdown('<div class="stat-card"><div class="stat-number">607</div><div class="stat-label">Salary records</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="stat-card"><div class="stat-number">{salary_count}</div><div class="stat-label">Salary records</div></div>', unsafe_allow_html=True)
 with col2:
-    st.markdown('<div class="stat-card"><div class="stat-number">50+</div><div class="stat-label">Job titles</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="stat-card"><div class="stat-number">{onet_count}</div><div class="stat-label">Occupations</div></div>', unsafe_allow_html=True)
 with col3:
-    st.markdown('<div class="stat-card"><div class="stat-number">50+</div><div class="stat-label">Countries</div></div>', unsafe_allow_html=True)
-
+    st.markdown('<div class="stat-card"><div class="stat-number">2</div><div class="stat-label">Data sources</div></div>', unsafe_allow_html=True)
 st.markdown("<br>", unsafe_allow_html=True)
 
 question = st.text_input("", placeholder="e.g. What is the average salary for a data engineer?")
 
 st.markdown('<p class="suggestion-label">Try one of these:</p>', unsafe_allow_html=True)
 suggestions = [
-    "What is the average salary for a data engineer?",
-    "Which jobs pay the most in data science?",
-    "How does remote work affect salary?",
-    "Salary difference between entry level and senior?",
+    "What skills do I need to become a data engineer?",
+    "Which data science jobs pay the most?",
+    "Which careers have the best job growth outlook?",
+    "What does a data engineer do day to day?",
 ]
 
 cols = st.columns(2)
