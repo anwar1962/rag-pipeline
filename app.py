@@ -8,6 +8,9 @@ from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, AIMessage
+from langgraph.prebuilt import create_react_agent
 
 load_dotenv()
 
@@ -106,26 +109,25 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 @st.cache_resource
-def build_chain():
+def build_agent():
     experience_map = {"EN": "Entry level", "MI": "Mid level", "SE": "Senior", "EX": "Executive"}
-    employment_map = {"FT": "Full time", "PT": "Part time", "CT": "Contract", "FL": "Freelance"}
 
     salary_df = pd.read_csv("ds_salaries.csv")
+    onet_df = pd.read_csv("onet_occupations.csv")
+
     salary_docs = []
     for _, row in salary_df.iterrows():
         content = f"""
 Job Title: {row['job_title']}
 Experience Level: {experience_map.get(row['experience_level'], row['experience_level'])}
-Employment Type: {employment_map.get(row['employment_type'], row['employment_type'])}
 Salary (USD): ${row['salary_in_usd']:,}
 Remote Ratio: {row['remote_ratio']}% remote
 Company Location: {row['company_location']}
 Company Size: {'Small' if row['company_size']=='S' else 'Medium' if row['company_size']=='M' else 'Large'}
 Year: {row['work_year']}
 """
-        salary_docs.append(Document(page_content=content, metadata={"source": "salary"}))
+        salary_docs.append(Document(page_content=content))
 
-    onet_df = pd.read_csv("onet_occupations.csv")
     onet_docs = []
     for _, row in onet_df.iterrows():
         content = f"""
@@ -134,40 +136,66 @@ Description: {row['description']}
 Key Skills: {row['skills']}
 Knowledge Areas: {row['knowledge']}
 Typical Tasks: {row['tasks']}
-Bright Outlook: {'Yes - strong job growth expected' if row['bright_outlook'] else 'Average growth'}
+Bright Outlook: {'Yes' if row['bright_outlook'] else 'No'}
 """
-        onet_docs.append(Document(page_content=content, metadata={"source": "onet"}))
+        onet_docs.append(Document(page_content=content))
 
-    all_docs = salary_docs + onet_docs
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    chunks = splitter.split_documents(all_docs)
-    vectorstore = FAISS.from_documents(chunks, OpenAIEmbeddings())
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 20})
+    salary_store = FAISS.from_documents(salary_docs, OpenAIEmbeddings())
+    onet_store = FAISS.from_documents(onet_docs, OpenAIEmbeddings())
 
-    prompt = ChatPromptTemplate.from_template("""
-You are an expert career and job market analyst with access to real salary data
-and detailed O*NET occupation data. Answer with specific numbers, skills, tasks,
-and insights. Mention salary ranges, required skills, and job outlook when relevant.
+    @tool
+    def search_salaries(query: str) -> str:
+        """Search real salary data for data science and engineering roles."""
+        docs = salary_store.similarity_search(query, k=15)
+        return "\n".join([d.page_content for d in docs])
 
-Data:
-{context}
+    @tool
+    def search_careers(query: str) -> str:
+        """Search O*NET government occupation data for skills and career information."""
+        docs = onet_store.similarity_search(query, k=10)
+        return "\n".join([d.page_content for d in docs])
 
-Question: {question}
-""")
+    @tool
+    def calculate_salary_stats(job_title: str) -> str:
+        """Calculate salary statistics for a specific job title."""
+        filtered = salary_df[salary_df['job_title'].str.lower().str.contains(job_title.lower())]
+        if filtered.empty:
+            return f"No salary data found for {job_title}"
+        return str({
+            "count": len(filtered),
+            "average": f"${filtered['salary_in_usd'].mean():,.0f}",
+            "median": f"${filtered['salary_in_usd'].median():,.0f}",
+            "min": f"${filtered['salary_in_usd'].min():,.0f}",
+            "max": f"${filtered['salary_in_usd'].max():,.0f}",
+        })
 
-    llm = ChatOpenAI(model="gpt-3.5-turbo")
-    chain = (
-        {"context": retriever, "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
-    return chain, len(salary_df), len(onet_df)
+    tools = [search_salaries, search_careers, calculate_salary_stats]
+    llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+
+    system_prompt = """You are an expert career and job market analyst. You ONLY answer questions about careers, salaries, job skills, and professional development.
+
+STRICT RULES:
+- ONLY answer questions about careers, jobs, salaries, and skills
+- For ANY other topic — sports, news, prices, weather, politics — say: "I can only help with career and job market questions. Try asking me about salaries, skills, or career paths."
+- Never use your training knowledge to answer factual questions outside careers
+- Always use your tools first before answering — never guess salary numbers
+- When searching skills for data roles use terms like: "data engineer", "database", "computer systems"
+- When searching AI roles use: "machine learning", "software developer", "data scientist"
+- Always combine salary stats AND career skills in career transition answers
+- If context from previous conversation is lost tell the user to repeat their background
+
+When answering career transitions always cover:
+1. Current role salary using calculate_salary_stats
+2. Target role salary using closest matching title
+3. Skills gap from O*NET data
+4. Growth outlook"""
+    agent = create_react_agent(llm, tools, prompt=system_prompt)
+    return agent, len(salary_df), len(onet_df)
 st.markdown('<p class="hero-title">AI Job Market Analyst</p>', unsafe_allow_html=True)
 st.markdown('<p class="hero-sub">Ask anything about data science salaries, roles, and career trends</p>', unsafe_allow_html=True)
 
-with st.spinner("Loading career intelligence data..."):
-    chain, salary_count, onet_count = build_chain()
+with st.spinner("Loading career intelligence agent..."):
+    agent, salary_count, onet_count = build_agent()
 
 col1, col2, col3 = st.columns(3)
 with col1:
@@ -175,12 +203,28 @@ with col1:
 with col2:
     st.markdown(f'<div class="stat-card"><div class="stat-number">{onet_count}</div><div class="stat-label">Occupations</div></div>', unsafe_allow_html=True)
 with col3:
-    st.markdown('<div class="stat-card"><div class="stat-number">2</div><div class="stat-label">Data sources</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="stat-card"><div class="stat-number">3</div><div class="stat-label">AI tools</div></div>', unsafe_allow_html=True)
+
 st.markdown("<br>", unsafe_allow_html=True)
 
-question = st.text_input("", placeholder="e.g. What is the average salary for a data engineer?")
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "last_question" not in st.session_state:
+    st.session_state.last_question = ""
 
-st.markdown('<p class="suggestion-label">Try one of these:</p>', unsafe_allow_html=True)
+if st.session_state.chat_history:
+    if st.button("Clear conversation"):
+        st.session_state.chat_history = []
+        st.session_state.last_question = ""
+        st.rerun()
+
+for msg in st.session_state.chat_history:
+    if isinstance(msg, HumanMessage):
+        st.markdown(f'<div style="text-align:right;margin:8px 0"><span style="background:#1c1f2e;padding:8px 14px;border-radius:12px;font-size:14px;color:#e0e0e0">{msg.content}</span></div>', unsafe_allow_html=True)
+    elif isinstance(msg, AIMessage):
+        st.markdown(f'<div class="answer-box">{msg.content}</div>', unsafe_allow_html=True)
+
+st.markdown('<p class="suggestion-label">Try asking:</p>', unsafe_allow_html=True)
 suggestions = [
     "What skills do I need to become a data engineer?",
     "Which data science jobs pay the most?",
@@ -189,13 +233,27 @@ suggestions = [
 ]
 
 cols = st.columns(2)
+selected = None
 for i, s in enumerate(suggestions):
-    if cols[i % 2].button(s):
-        question = s
+    if cols[i % 2].button(s, key=f"btn_{i}"):
+        selected = s
 
-if question:
-    with st.spinner("Analyzing job market data..."):
-        answer = chain.invoke(question)
-    st.markdown(f'<div class="answer-box">{answer}</div>', unsafe_allow_html=True)
+with st.form(key="chat_form", clear_on_submit=True):
+    question = st.text_input("", placeholder="e.g. I am a data engineer — what should I be earning?")
+    submitted = st.form_submit_button("Ask")
 
-st.markdown('<div class="footer">Built with LangChain · OpenAI · FAISS · Streamlit &nbsp;|&nbsp; Data: Kaggle DS Salaries Dataset</div>', unsafe_allow_html=True)
+final_question = selected if selected else (question if submitted else None)
+
+if final_question and final_question != st.session_state.last_question:
+    st.session_state.last_question = final_question
+    with st.spinner("Agent is thinking..."):
+        try:
+            st.session_state.chat_history.append(HumanMessage(content=final_question))
+            result = agent.invoke({"messages": st.session_state.chat_history})
+            answer = result["messages"][-1].content
+            st.session_state.chat_history.append(AIMessage(content=answer))
+            st.rerun()
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+st.markdown('<div class="footer">Built with LangChain · LangGraph · OpenAI · FAISS · Streamlit &nbsp;|&nbsp; Data: Kaggle · O*NET</div>', unsafe_allow_html=True)
