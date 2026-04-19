@@ -246,13 +246,30 @@ final_question = selected if selected else (question if submitted else None)
 
 if final_question and final_question != st.session_state.last_question:
     st.session_state.last_question = final_question
-    with st.spinner("Agent is thinking..."):
+    st.session_state.chat_history.append(HumanMessage(content=final_question))
+
+    with st.chat_message("assistant"):
+        response_container = st.empty()
+        full_response = ""
+
         try:
-            st.session_state.chat_history.append(HumanMessage(content=final_question))
-            result = agent.invoke({"messages": st.session_state.chat_history})
-            answer = result["messages"][-1].content
-            st.session_state.chat_history.append(AIMessage(content=answer))
+            with st.spinner("Agent is thinking..."):
+                result = agent.invoke({"messages": st.session_state.chat_history})
+                full_response = result["messages"][-1].content
+
+            words = full_response.split()
+            for i, word in enumerate(words):
+                full_response_so_far = " ".join(words[:i+1])
+                response_container.markdown(
+                    f'<div class="answer-box">{full_response_so_far}</div>',
+                    unsafe_allow_html=True
+                )
+                import time
+                time.sleep(0.05)
+
+            st.session_state.chat_history.append(AIMessage(content=full_response))
             st.rerun()
+
         except Exception as e:
             st.error(f"Error: {e}")
 
