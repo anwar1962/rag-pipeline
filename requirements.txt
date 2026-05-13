@@ -1,10 +1,19 @@
-langchain
-langchain-community
-langchain-openai
-langchain-text-splitters
-langchain-core
-faiss-cpu
-openai
-streamlit
-pandas
-python-dotenv
+python -c "
+reqs = [
+    'langchain',
+    'langchain-community',
+    'langchain-openai',
+    'langchain-text-splitters',
+    'langchain-core',
+    'langgraph',
+    'faiss-cpu',
+    'openai',
+    'streamlit',
+    'pandas',
+    'python-dotenv',
+    'ddgs',
+]
+with open('requirements.txt', 'w') as f:
+    f.write('\n'.join(reqs))
+print('done')
+"
