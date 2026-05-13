@@ -2,15 +2,13 @@ import streamlit as st
 from dotenv import load_dotenv
 import pandas as pd
 from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.output_parsers import StrOutputParser
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.prebuilt import create_react_agent
+from ddgs import DDGS
+import time
 
 load_dotenv()
 
@@ -23,7 +21,7 @@ st.set_page_config(
 st.markdown("""
 <style>
     .main { background-color: #0f1117; }
-.block-container { padding-top: 3.5rem; max-width: 800px; }
+    .block-container { padding-top: 3.5rem; max-width: 800px; }
     .hero-title {
         font-size: 2.4rem;
         font-weight: 700;
@@ -108,6 +106,8 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+
 @st.cache_resource
 def build_agent():
     experience_map = {"EN": "Entry level", "MI": "Mid level", "SE": "Senior", "EX": "Executive"}
@@ -169,7 +169,24 @@ Bright Outlook: {'Yes' if row['bright_outlook'] else 'No'}
             "max": f"${filtered['salary_in_usd'].max():,.0f}",
         })
 
-    tools = [search_salaries, search_careers, calculate_salary_stats]
+    @tool
+    def search_web(query: str) -> str:
+        """Search the web for current job postings, hiring trends, and recent career news.
+        Use this for questions about current job market conditions, which companies are hiring now,
+        or recent industry trends."""
+        try:
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=5))
+            if not results:
+                return "No results found"
+            output = []
+            for r in results:
+                output.append(f"Title: {r.get('title', '')}\nSummary: {r.get('body', '')}\nSource: {r.get('href', '')}\n")
+            return "\n".join(output)
+        except Exception as e:
+            return f"Search error: {e}"
+
+    tools = [search_salaries, search_careers, calculate_salary_stats, search_web]
     llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
 
     system_prompt = """You are an expert career and job market analyst. You ONLY answer questions about careers, salaries, job skills, and professional development.
@@ -183,14 +200,18 @@ STRICT RULES:
 - When searching AI roles use: "machine learning", "software developer", "data scientist"
 - Always combine salary stats AND career skills in career transition answers
 - If context from previous conversation is lost tell the user to repeat their background
+- Use search_web for questions about current job openings, which companies are hiring, or recent market news
 
 When answering career transitions always cover:
 1. Current role salary using calculate_salary_stats
 2. Target role salary using closest matching title
 3. Skills gap from O*NET data
 4. Growth outlook"""
+
     agent = create_react_agent(llm, tools, prompt=system_prompt)
     return agent, len(salary_df), len(onet_df)
+
+
 st.markdown('<p class="hero-title">AI Job Market Analyst</p>', unsafe_allow_html=True)
 st.markdown('<p class="hero-sub">Ask anything about data science salaries, roles, and career trends</p>', unsafe_allow_html=True)
 
@@ -203,7 +224,7 @@ with col1:
 with col2:
     st.markdown(f'<div class="stat-card"><div class="stat-number">{onet_count}</div><div class="stat-label">Occupations</div></div>', unsafe_allow_html=True)
 with col3:
-    st.markdown('<div class="stat-card"><div class="stat-number">3</div><div class="stat-label">AI tools</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="stat-card"><div class="stat-number">4</div><div class="stat-label">AI tools</div></div>', unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -228,7 +249,7 @@ st.markdown('<p class="suggestion-label">Try asking:</p>', unsafe_allow_html=Tru
 suggestions = [
     "What skills do I need to become a data engineer?",
     "Which data science jobs pay the most?",
-    "Which careers have the best job growth outlook?",
+    "Which companies are hiring data engineers right now?",
     "What does a data engineer do day to day?",
 ]
 
@@ -264,8 +285,7 @@ if final_question and final_question != st.session_state.last_question:
                     f'<div class="answer-box">{full_response_so_far}</div>',
                     unsafe_allow_html=True
                 )
-                import time
-                time.sleep(0.05)
+                time.sleep(0.03)
 
             st.session_state.chat_history.append(AIMessage(content=full_response))
             st.rerun()
